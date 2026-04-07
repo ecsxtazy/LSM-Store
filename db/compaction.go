@@ -2,17 +2,13 @@ package db
 
 import "multithreading_hw_3/memtable"
 
-// runCompactor performs background compaction when threshold is exceeded.
 func (db *DB) runCompactor() {
-	// TODO:
-	// 1) wait for compactCh notifications or shutdown signal.
 	defer db.wg.Done()
 	for {
 		select {
 		case <-db.closeCh:
 			return
 		case <-db.compactCh:
-			// 2) while len(sstables) > SSTableCompactThreshold, compact oldest pair.
 			for {
 				db.mu.RLock()
 				shouldCompact := len(db.sstables) > db.opts.SSTableCompactThreshold
@@ -26,72 +22,78 @@ func (db *DB) runCompactor() {
 			}
 		}
 	}
-	// 3) only one compaction at a time.
 }
-
-// compactOldestPair merges two oldest SSTables into one and publishes atomically.
-// Returns false when compaction is not possible (e.g., fewer than 2 tables).
 func (db *DB) compactOldestPair() bool {
-	// TODO:
-	// 1) snapshot two oldest tables.
 	db.mu.Lock()
 	if len(db.sstables) < 2 {
 		db.mu.Unlock()
 		return false
 	}
+
 	older := db.sstables[0]
-	newest := db.sstables[1]
-	// 2) merge outside lock.
+	newer := db.sstables[1]
+
+	olderRecords := make([]memtable.Record, len(older.records))
+	copy(olderRecords, older.records)
+	newerRecords := make([]memtable.Record, len(newer.records))
+	copy(newerRecords, newer.records)
+
 	db.mu.Unlock()
-	merged := mergeTwoSSTables(older, newest)
-	// 3) publish new sstable list atomically (old two removed, merged inserted).
+	merged := mergeTwoSSTables(&SSTable{records: olderRecords}, &SSTable{records: newerRecords})
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	newSstables := make([]*SSTable, 0, len(db.sstables)-1)
-	found := 0
-	for _, sst := range db.sstables {
-		if found < 2 && (sst == older || sst == newest) {
-			found++
-			continue
-		}
-		newSstables = append(newSstables, sst)
+	if len(db.sstables) < 2 || db.sstables[0] != older || db.sstables[1] != newer {
+		return false
 	}
+
+	newSstables := make([]*SSTable, 0, len(db.sstables)-1)
 	newSstables = append(newSstables, merged)
+	newSstables = append(newSstables, db.sstables[2:]...)
 	db.sstables = newSstables
-	return false
+
+	return true
 }
 
-// mergeTwoSSTables merges two sorted SSTables where `newer` has higher priority
-// for duplicate keys. Tombstones may be retained in the baseline solution.
 func mergeTwoSSTables(older, newer *SSTable) *SSTable {
-	// TODO: two-way merge by key with version precedence (newer overrides older).
 	olderRecords := older.records
-	newestRecords := newer.records
+	newerRecords := newer.records
 	merged := make([]memtable.Record, 0)
 	i, j := 0, 0
-	for i < len(olderRecords) && j < len(newestRecords) {
-		if olderRecords[i].Key < newestRecords[j].Key {
-			merged = append(merged, olderRecords[i])
+	for i < len(olderRecords) && j < len(newerRecords) {
+		if olderRecords[i].Key < newerRecords[j].Key {
+			merged = append(merged, copyRecord(olderRecords[i]))
 			i++
-		} else if olderRecords[i].Key > newestRecords[j].Key {
-			merged = append(merged, newestRecords[j])
+		} else if olderRecords[i].Key > newerRecords[j].Key {
+			merged = append(merged, copyRecord(newerRecords[j]))
 			j++
 		} else {
-			merged = append(merged, newestRecords[j])
+			merged = append(merged, copyRecord(newerRecords[j]))
 			i++
 			j++
 		}
 	}
 	for i < len(olderRecords) {
-		merged = append(merged, olderRecords[i])
+		merged = append(merged, copyRecord(olderRecords[i]))
 		i++
 	}
-	for j < len(newestRecords) {
-		merged = append(merged, newestRecords[j])
-		i++
+	for j < len(newerRecords) {
+		merged = append(merged, copyRecord(newerRecords[j]))
+		j++
 	}
 	return &SSTable{
 		records: merged,
 	}
+}
+
+func copyRecord(rec memtable.Record) memtable.Record {
+	copied := memtable.Record{
+		Key:       rec.Key,
+		Tombstone: rec.Tombstone,
+	}
+	if rec.Value != nil {
+		copied.Value = make([]byte, len(rec.Value))
+		copy(copied.Value, rec.Value)
+	}
+	return copied
 }

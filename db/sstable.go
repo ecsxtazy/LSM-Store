@@ -1,24 +1,46 @@
 package db
 
-import "multithreading_hw_3/memtable"
+import (
+	"multithreading_hw_3/memtable"
+	"sort"
+)
 
-// SSTable is an immutable, in-memory sorted list of records.
 type SSTable struct {
-	// records are sorted by Key ascending and may contain tombstones.
 	records []memtable.Record
 }
 
-// BuildSSTableFromMemtable converts an immutable memtable into an SSTable.
 func BuildSSTableFromMemtable(mt *memtable.Memtable) *SSTable {
-	// TODO:
-	// 1) iterate immutable memtable in key order.
-	// 2) copy each record (including tombstones) into an internal slice.
-	// 3) ensure values are copied so SSTable data is immutable from outside.
-	panic("TODO")
+	records := make([]memtable.Record, 0, mt.Len())
+	mt.Range(func(rec memtable.Record) bool {
+		recCopy := memtable.Record{
+			Key:       rec.Key,
+			Tombstone: rec.Tombstone,
+		}
+		if rec.Value != nil {
+			recCopy.Value = make([]byte, len(rec.Value))
+			copy(recCopy.Value, rec.Value)
+		}
+		records = append(records, recCopy)
+		return true
+	})
+	return &SSTable{records: records}
 }
 
-// Get finds a record by key. ok=false means not found.
 func (s *SSTable) Get(key string) (memtable.Record, bool) {
-	// TODO: binary or linear search by key in sorted records.
-	panic("TODO")
+	idx := sort.Search(len(s.records), func(i int) bool {
+		return s.records[i].Key >= key
+	})
+	if idx < len(s.records) && s.records[idx].Key == key {
+		rec := s.records[idx]
+		if rec.Tombstone {
+			return memtable.Record{Tombstone: true}, true
+		}
+		if rec.Value != nil {
+			valueCopy := make([]byte, len(rec.Value))
+			copy(valueCopy, rec.Value)
+			return memtable.Record{Key: rec.Key, Value: valueCopy}, true
+		}
+		return rec, true
+	}
+	return memtable.Record{}, false
 }

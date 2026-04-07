@@ -2,18 +2,44 @@ package db
 
 import "multithreading_hw_3/memtable"
 
-// runFlusher consumes immutable memtables and builds SSTables in FIFO order.
 func (db *DB) runFlusher() {
-	// TODO:
-	// 1) receive immutable memtables from flushCh until shutdown.
-	// 2) build SSTable from each memtable.
-	// 3) publish result atomically: add new SSTable and remove immutable from visible list.
-	// 4) notify compactor when sstable count may exceed threshold.
-	panic("TODO")
+	defer db.wg.Done()
+	for {
+		select {
+		case <-db.closeCh:
+			for {
+				select {
+				case immutable := <-db.flushCh:
+					sst := BuildSSTableFromMemtable(immutable)
+					db.publishFlushed(immutable, sst)
+				default:
+					return
+				}
+			}
+		case immutable := <-db.flushCh:
+			sst := BuildSSTableFromMemtable(immutable)
+			db.publishFlushed(immutable, sst)
+			db.mu.RLock()
+			shouldNotify := len(db.sstables) > db.opts.SSTableCompactThreshold
+			db.mu.RUnlock()
+			if shouldNotify {
+				select {
+				case db.compactCh <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}
 }
 
-// publishFlushed atomically replaces state visible to Get/Range after flush.
 func (db *DB) publishFlushed(flushed *memtable.Memtable, table *SSTable) {
-	// TODO: update db.immutables/db.sstables in one short critical section.
-	panic("TODO")
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	for i, im := range db.immutables {
+		if im == flushed {
+			db.immutables = append(db.immutables[:i], db.immutables[i+1:]...)
+			break
+		}
+	}
+	db.sstables = append(db.sstables, table)
 }
