@@ -1,5 +1,11 @@
 package memtable
 
+import (
+	"slices"
+	"sort"
+	"sync"
+)
+
 type Record struct {
 	Key       string
 	Value     []byte
@@ -7,29 +13,78 @@ type Record struct {
 }
 
 type Memtable struct {
-	// TODO: define internal fields (storage + sync)
+	mu   sync.RWMutex
+	data []Record
 }
 
 func New() *Memtable {
-	panic("not implemented")
+	return &Memtable{
+		data: make([]Record, 0),
+	}
 }
-
 func (m *Memtable) Len() int {
-	panic("not implemented")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.data)
 }
 
 func (m *Memtable) Get(key string) ([]byte, bool) {
-	panic("not implemented")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	index := sort.Search(len(m.data), func(i int) bool {
+		return m.data[i].Key >= key
+	})
+	if index < len(m.data) && m.data[index].Key == key {
+		if m.data[index].Tombstone {
+			return nil, false
+		}
+		return append([]byte(nil), m.data[index].Value...), true
+	}
+	return nil, false
 }
 
 func (m *Memtable) Put(key string, value []byte) {
-	panic("not implemented")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := sort.Search(len(m.data), func(i int) bool {
+		return m.data[i].Key >= key
+	})
+	copy := append([]byte(nil), value...)
+	if index < len(m.data) && m.data[index].Key == key {
+		m.data[index].Value = copy
+		m.data[index].Tombstone = false
+	} else {
+		m.data = slices.Insert(m.data, index, Record{
+			Key:       key,
+			Value:     copy,
+			Tombstone: false,
+		})
+	}
 }
 
 func (m *Memtable) Delete(key string) {
-	panic("not implemented")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := sort.Search(len(m.data), func(i int) bool {
+		return m.data[i].Key >= key
+	})
+	if index < len(m.data) && m.data[index].Key == key {
+		m.data[index].Tombstone = true
+	} else {
+		m.data = slices.Insert(m.data, index, Record{
+			Key:       key,
+			Value:     nil,
+			Tombstone: true,
+		})
+	}
 }
 
 func (m *Memtable) Range(fn func(rec Record) bool) {
-	panic("not implemented")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, rec := range m.data {
+		if !fn(rec) {
+			break
+		}
+	}
 }
